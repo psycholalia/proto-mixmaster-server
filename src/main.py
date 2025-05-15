@@ -168,9 +168,8 @@ async def get_task_status(task_id: str):
 
 @app.get('/audio/{task_id}')
 def get_audio_file(task_id:str):
-    output_path = os.path.join(PROCESSED_DIR, f"{task_id}_dilla.mp3")
-    return open(output_path, 'r').read()    
-
+    return os.path.join(PROCESSED_DIR, f"{task_id}_dilla.mp3")
+    
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
