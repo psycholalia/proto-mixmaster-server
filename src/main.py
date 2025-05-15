@@ -51,6 +51,7 @@ async def apply_j_dilla_effect(
     - Time stretching
     - Lo-fi effects
     """
+
     # Load the audio file
     y, sr = librosa.load(input_path, sr=None)
     
@@ -138,17 +139,17 @@ async def process_audio(
         shutil.copyfileobj(audio.file, buffer)
     
     # Process the audio in the background
-    background_tasks.add_task(
-        apply_j_dilla_effect,
-        input_path=input_path,
-        output_path=output_path,
-        task_id=task_id
-    )
+    # background_tasks.add_task(
+    #     apply_j_dilla_effect,
+    #     input_path=input_path,
+    #     output_path=output_path,
+    #     task_id=task_id
+    # )
+    a = await apply_j_dilla_effect(input_path=input_path,output_path=output_path,task_id=task_id)
     
     # For demo purposes, we'll add a slight delay to simulate processing
     # In a real application, you'd return a task ID and have a separate endpoint to check status
     time.sleep(2)  # Simulate processing time
-    
     # Return the URL to the processed file
     return {
         "status": "success",
