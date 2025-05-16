@@ -1,23 +1,24 @@
 import os
 import uuid
+from typing import List
 import shutil
 from fastapi import File, UploadFile, HTTPException, BackgroundTasks
 from fastapi.responses import FileResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi.middleware.cors import CORSMiddleware
 import librosa
 import soundfile as sf
 import numpy as np
 import time
 from app import app
 
-# Create directories for uploads and processed files
-UPLOAD_DIR = "uploads"
-PROCESSED_DIR = "processed"
+# Use Railway volume paths for storage
+RAILWAY_VOLUME = os.getenv('RAILWAY_VOLUME_MOUNT_PATH', '/data')
+UPLOAD_DIR = os.path.join(RAILWAY_VOLUME, "uploads")
+PROCESSED_DIR = os.path.join(RAILWAY_VOLUME, "processed")
+
+# Create directories in Railway volume
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(PROCESSED_DIR, exist_ok=True)
-
-# Mount the processed directory to serve files
-app.mount("/audio", StaticFiles(directory=PROCESSED_DIR), name="audio")
 
 @app.get("/")
 def read_root():
@@ -130,13 +131,48 @@ async def process_audio(
     return {
         "status": "success",
         "message": "Audio processed successfully",
-        "audioUrl": f"/audio/{task_id}_dilla{file_extension}",
         "taskId": task_id
     }
+
+@app.get("/audio/{file_id}")
+async def get_audio(file_id: str):
+    """
+    Retrieve a processed audio file by ID
+    """
+    # Look for the file in the processed directory
+    for file in os.listdir(PROCESSED_DIR):
+        if file.startswith(file_id):
+            file_path = os.path.join(PROCESSED_DIR, file)
+            return FileResponse(
+                file_path,
+                media_type="audio/mpeg",
+                headers={
+                    "Content-Disposition": f"attachment; filename={file}"
+                }
+            )
+    
+    raise HTTPException(status_code=404, detail="Audio file not found")
 
 @app.get("/status/{task_id}")
 async def get_task_status(task_id: str):
     """
-    Check the status of a processing task
+    Check the status of a processing task and return the file URL if complete
     """
-    return {"status": "complete", "taskId": task_id}
+    # Check if the processed file exists
+    for file in os.listdir(PROCESSED_DIR):
+        if file.startswith(task_id):
+            return {
+                "status": "complete",
+                "taskId": task_id,
+                "audioUrl": f"/audio/{task_id}"
+            }
+    
+    # Check if the file is still being processed
+    for file in os.listdir(UPLOAD_DIR):
+        if file.startswith(task_id):
+            return {
+                "status": "processing",
+                "taskId": task_id
+            }
+    
+    raise HTTPException(status_code=404, detail="Task not found")
