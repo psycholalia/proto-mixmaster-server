@@ -12,7 +12,8 @@ import time
 from app import app
 
 # Use Railway volume paths for storage
-RAILWAY_VOLUME = os.getenv('RAILWAY_VOLUME_MOUNT_PATH', '/data')
+
+RAILWAY_VOLUME = os.getenv('RAILWAY_VOLUME_MOUNT_PATH', 'server/data')
 UPLOAD_DIR = os.path.join(RAILWAY_VOLUME, "uploads")
 PROCESSED_DIR = os.path.join(RAILWAY_VOLUME, "processed")
 
@@ -90,6 +91,8 @@ async def apply_j_dilla_effect(
     
     # Apply a subtle low-pass filter for warmth
     output_audio = librosa.effects.preemphasis(output_audio, coef=0.95)
+    gain = 15.5
+    output_audio *= gain
     
     # Save the processed audio
     sf.write(output_path, output_audio, sr)
@@ -160,7 +163,6 @@ async def get_task_status(task_id: str):
     """
     # Check if the processed file exists
     for file in os.listdir(PROCESSED_DIR):
-        print('file', file)
         if file.startswith(task_id):
             return {
                 "status": "complete",
