@@ -10,6 +10,8 @@ import soundfile as sf
 import numpy as np
 import time
 from app import app
+import gc
+from contextlib import contextmanager
 
 # Use Railway volume paths for storage
 
@@ -20,6 +22,35 @@ PROCESSED_DIR = os.path.join(RAILWAY_VOLUME, "processed")
 # Create directories in Railway volume
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(PROCESSED_DIR, exist_ok=True)
+
+# Constants for audio processing
+CHUNK_SIZE = 1024 * 1024  # 1MB chunks for file handling
+MAX_AUDIO_LENGTH = 600  # Maximum audio length in seconds
+SAMPLE_RATE = 44100  # Standard sample rate
+
+@contextmanager
+def cleanup_files(*files):
+    """Context manager to ensure file cleanup"""
+    try:
+        yield
+    finally:
+        for file in files:
+            try:
+                if os.path.exists(file):
+                    os.remove(file)
+            except Exception as e:
+                print(f"Error cleaning up {file}: {e}")
+        gc.collect()  # Force garbage collection
+
+def process_in_chunks(y: np.ndarray, chunk_size: int, process_func):
+    """Process audio data in chunks to reduce memory usage"""
+    chunks = []
+    for i in range(0, len(y), chunk_size):
+        chunk = y[i:i + chunk_size]
+        processed_chunk = process_func(chunk)
+        chunks.append(processed_chunk)
+        gc.collect()  # Clean up after each chunk
+    return np.concatenate(chunks)
 
 @app.get("/")
 def read_root():
@@ -35,69 +66,102 @@ async def apply_j_dilla_effect(
     lofi_amount: float = 0.4
 ):
     """
-    Process audio to sound like J Dilla style with:
-    - Beat slicing
-    - Swing quantization
-    - Time stretching
-    - Lo-fi effects
+    Process audio to sound like J Dilla style with optimized memory usage
     """
-    # Load the audio file
-    y, sr = librosa.load(input_path, sr=None)
-    
-    # Step 1: Beat detection
-    tempo, beat_frames = librosa.beat.beat_track(y=y, sr=sr, hop_length=512)
-    beat_times = librosa.frames_to_time(beat_frames, sr=sr)
-    
-    # Step 2: Apply swing feel (J Dilla's signature swing)
-    swung_beats = []
-    for i, beat in enumerate(beat_times):
-        if i % 2 == 1:  # Apply swing to every other beat
-            swung_beats.append(beat + swing_amount * (beat_times[1] - beat_times[0]))
-        else:
-            swung_beats.append(beat)
-    
-    # Step 3: Time stretching for that "dragging" feel
-    y_stretched = librosa.effects.time_stretch(y, rate=time_stretch_factor)
-    
-    # Step 4: Lo-fi effect
-    bit_depth = 16 - int(10 * lofi_amount)  # Reduce bit depth for lo-fi effect
-    y_quantized = np.round(y_stretched * (2**(bit_depth-1))) / (2**(bit_depth-1))
-    
-    # Add vinyl crackle
-    crackle_amplitude = lofi_amount * 0.01
-    vinyl_crackle = np.random.normal(0, crackle_amplitude, len(y_quantized))
-    y_with_crackle = y_quantized + vinyl_crackle
-    
-    # Step 5: Slice and rearrange beats slightly
-    output_audio = np.zeros_like(y_with_crackle)
-    beat_samples = librosa.time_to_samples(swung_beats, sr=sr)
-    
-    for i in range(len(beat_samples) - 1):
-        start = beat_samples[i]
-        end = beat_samples[i+1]
-        
-        if end >= len(y_with_crackle) or start >= len(y_with_crackle):
-            continue
+    try:
+        # Load audio in chunks with memory cleanup
+        y, sr = librosa.load(
+            input_path, 
+            sr=SAMPLE_RATE,
+            duration=MAX_AUDIO_LENGTH,  # Limit maximum duration
+            mono=True  # Force mono to reduce memory usage
+        )
+
+        # Early cleanup of input file
+        if os.path.exists(input_path):
+            os.remove(input_path)
+        gc.collect()
+
+        # Process beats in smaller chunks
+        hop_length = 512
+        tempo, beat_frames = librosa.beat.beat_track(
+            y=y, 
+            sr=sr, 
+            hop_length=hop_length,
+            tightness=100  # Reduce computation complexity
+        )
+        beat_times = librosa.frames_to_time(beat_frames, sr=sr)
+
+        # Apply swing in chunks
+        def apply_swing(chunk, start_idx):
+            chunk_copy = chunk.copy()
+            chunk_beats = np.where((beat_times >= start_idx/sr) & 
+                                 (beat_times < (start_idx + len(chunk))/sr))[0]
             
-        segment = y_with_crackle[start:end]
+            for i in chunk_beats:
+                if i % 2 == 1 and i+1 < len(beat_times):
+                    swing_samples = int(swing_amount * sr * (beat_times[1] - beat_times[0]))
+                    beat_start = int((beat_times[i] - start_idx/sr) * sr)
+                    if beat_start + swing_samples < len(chunk):
+                        chunk_copy[beat_start:beat_start+swing_samples] = \
+                            chunk[beat_start+swing_samples:beat_start+2*swing_samples]
+            return chunk_copy
+
+        # Process in chunks
+        chunk_samples = sr * 5  # 5-second chunks
+        y_swung = process_in_chunks(y, chunk_samples, 
+                                  lambda chunk: apply_swing(chunk, len(chunks)*chunk_samples))
+
+        # Time stretching in chunks
+        def stretch_chunk(chunk):
+            return librosa.effects.time_stretch(chunk, rate=time_stretch_factor)
+
+        y_stretched = process_in_chunks(y_swung, chunk_samples, stretch_chunk)
+        del y_swung
+        gc.collect()
+
+        # Lo-fi effects
+        bit_depth = 16 - int(10 * lofi_amount)
+        bit_crusher = float(2 ** (bit_depth - 1))
         
-        if np.random.random() > 0.7:
-            adjustment = int(len(segment) * 0.08 * (1 - quantize_strength) * (np.random.random() - 0.5))
-            start = max(0, start + adjustment)
-            end = min(len(output_audio), end + adjustment)
+        def apply_lofi(chunk):
+            # Quantize
+            chunk_quantized = np.round(chunk * bit_crusher) / bit_crusher
+            # Add vinyl noise (reduced amplitude)
+            noise = np.random.normal(0, lofi_amount * 0.005, len(chunk_quantized))
+            return chunk_quantized + noise
+
+        y_processed = process_in_chunks(y_stretched, chunk_samples, apply_lofi)
+        del y_stretched
+        gc.collect()
+
+        # Save with proper normalization
+        max_amplitude = np.max(np.abs(y_processed))
+        if max_amplitude > 0:
+            y_processed = y_processed / max_amplitude * 0.95  # Prevent clipping
+
+        # Write output file with proper cleanup
+        sf.write(
+            output_path, 
+            y_processed, 
+            sr,
+            format='mp3',
+            subtype='PCM_16'
+        )
         
-        if end <= len(output_audio) and end > start:
-            output_audio[start:end] = segment[:end-start]
-    
-    # Apply a subtle low-pass filter for warmth
-    output_audio = librosa.effects.preemphasis(output_audio, coef=0.95)
-    gain = 15.5
-    output_audio *= gain
-    
-    # Save the processed audio
-    sf.write(output_path, output_audio, sr)
-    
-    return {"status": "complete", "file_path": output_path}
+        del y_processed
+        gc.collect()
+
+        return {"status": "complete", "file_path": output_path}
+
+    except Exception as e:
+        print(f"Error processing audio: {e}")
+        # Cleanup on error
+        for path in [input_path, output_path]:
+            if os.path.exists(path):
+                os.remove(path)
+        gc.collect()
+        raise
 
 @app.post("/process-audio")
 async def process_audio(
@@ -105,7 +169,7 @@ async def process_audio(
     audio: UploadFile = File(...)
 ):
     """
-    Upload an MP3 file and process it to sound like J Dilla
+    Upload and process audio file with proper resource management
     """
     if not audio.content_type or "audio/mpeg" not in audio.content_type:
         raise HTTPException(
@@ -119,64 +183,86 @@ async def process_audio(
     input_path = os.path.join(UPLOAD_DIR, f"{task_id}{file_extension}")
     output_path = os.path.join(PROCESSED_DIR, f"{task_id}_dilla{file_extension}")
     
-    with open(input_path, "wb") as buffer:
-        shutil.copyfileobj(audio.file, buffer)
-    
-    background_tasks.add_task(
-        apply_j_dilla_effect,
-        input_path=input_path,
-        output_path=output_path,
-        task_id=task_id
-    )
-    
-    time.sleep(2)  # Simulate processing time
-    
-    return {
-        "status": "success",
-        "message": "Audio processed successfully",
-        "taskId": task_id
-    }
+    try:
+        # Write file in chunks to manage memory
+        with open(input_path, "wb") as buffer:
+            while chunk := await audio.read(CHUNK_SIZE):
+                buffer.write(chunk)
+                await asyncio.sleep(0)  # Allow other tasks to run
+        
+        background_tasks.add_task(
+            apply_j_dilla_effect,
+            input_path=input_path,
+            output_path=output_path,
+            task_id=task_id
+        )
+        
+        return {
+            "status": "success",
+            "message": "Audio processing started",
+            "taskId": task_id
+        }
+    except Exception as e:
+        # Cleanup on error
+        for path in [input_path, output_path]:
+            if os.path.exists(path):
+                os.remove(path)
+        raise HTTPException(
+            status_code=500,
+            detail=str(e)
+        )
 
 @app.get("/audio/{file_id}")
 async def get_audio(file_id: str):
     """
-    Retrieve a processed audio file by ID
+    Stream audio file response to manage memory
     """
-    # Look for the file in the processed directory
-    for file in os.listdir(PROCESSED_DIR):
-        if file.startswith(file_id):
-            file_path = os.path.join(PROCESSED_DIR, file)
-            return FileResponse(
-                file_path,
-                media_type="audio/mpeg",
-                headers={
-                    "Content-Disposition": f"attachment; filename={file}"
-                }
-            )
-    
-    raise HTTPException(status_code=404, detail="Audio file not found")
+    try:
+        for file in os.listdir(PROCESSED_DIR):
+            if file.startswith(file_id):
+                file_path = os.path.join(PROCESSED_DIR, file)
+                return FileResponse(
+                    file_path,
+                    media_type="audio/mpeg",
+                    headers={
+                        "Content-Disposition": f"attachment; filename={file}"
+                    }
+                )
+        
+        raise HTTPException(status_code=404, detail="Audio file not found")
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error retrieving audio: {str(e)}"
+        )
 
 @app.get("/status/{task_id}")
 async def get_task_status(task_id: str):
     """
-    Check the status of a processing task and return the file URL if complete
+    Check processing status
     """
-    # Check if the processed file exists
-    for file in os.listdir(PROCESSED_DIR):
-        print('file appsrc', file)
-        if file.startswith(task_id):
-            return {
-                "status": "complete",
-                "taskId": task_id,
-                "audioUrl": f"/audio/{task_id}"
-            }
-    
-    # Check if the file is still being processed
-    for file in os.listdir(UPLOAD_DIR):
-        if file.startswith(task_id):
-            return {
-                "status": "processing",
-                "taskId": task_id
-            }
-    
-    raise HTTPException(status_code=404, detail="Task not found")
+    try:
+        # Check processed file first
+        for file in os.listdir(PROCESSED_DIR):
+            print('file app', file)
+            if file.startswith(task_id):
+                return {
+                    "status": "complete",
+                    "taskId": task_id,
+                    "audioUrl": f"/audio/{task_id}"
+                }
+        
+        # Check if still processing
+        for file in os.listdir(UPLOAD_DIR):
+            if file.startswith(task_id):
+                return {
+                    "status": "processing",
+                    "taskId": task_id
+                }
+        
+        raise HTTPException(status_code=404, detail="Task not found")
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error checking status: {str(e)}"
+        )
