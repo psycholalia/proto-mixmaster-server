@@ -163,6 +163,7 @@ async def get_task_status(task_id: str):
     """
     # Check if the processed file exists
     for file in os.listdir(PROCESSED_DIR):
+        print('file appsrc', file)
         if file.startswith(task_id):
             return {
                 "status": "complete",
