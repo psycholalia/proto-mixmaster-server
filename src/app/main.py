@@ -264,7 +264,8 @@ async def get_task_status(task_id: str):
         
         raise HTTPException(status_code=404, detail="Task not found")
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error checking status: {str(e)}"
-        )
+            print('exception', e)
+            raise HTTPException(
+                status_code=500,
+                detail=f"Error checking status: {str(e)}"
+            )
