@@ -1,7 +1,5 @@
 import os
 import uuid
-from typing import List
-import shutil
 from fastapi import File, UploadFile, HTTPException, BackgroundTasks
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -188,7 +186,7 @@ async def process_audio(
         with open(input_path, "wb") as buffer:
             while chunk := await audio.read(CHUNK_SIZE):
                 buffer.write(chunk)
-                await asyncio.sleep(0)  # Allow other tasks to run
+                await time.sleep(0)  # Allow other tasks to run
         
         background_tasks.add_task(
             apply_j_dilla_effect,
