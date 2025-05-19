@@ -241,12 +241,14 @@ async def get_audio(file_id: str):
 
 @app.get("/status/{task_id}")
 async def get_task_status(task_id: str):
+    print('func init')
     """
     Check processing status
     """
     try:
         # Check processed file first
         for file in os.listdir(PROCESSED_DIR):
+            print('processed files', file, PROCESSED_DIR)
             if file.startswith(task_id):
                 return {
                     "status": "complete",
@@ -256,6 +258,7 @@ async def get_task_status(task_id: str):
         
         # Check if still processing
         for file in os.listdir(UPLOAD_DIR):
+            print('upload files', file, UPLOAD_DIR)
             if file.startswith(task_id):
                 return {
                     "status": "processing",
