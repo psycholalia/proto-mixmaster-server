@@ -12,7 +12,7 @@ from producers.scott_burns import apply_scott_burns_effect
 
 # Use Railway volume paths for storage
 
-RAILWAY_VOLUME = os.getenv('RAILWAY_VOLUME_MOUNT_PATH', 'server/data')
+RAILWAY_VOLUME = os.getenv('RAILWAY_VOLUME_MOUNT_PATH', '/data')
 UPLOAD_DIR = os.path.join(RAILWAY_VOLUME, "uploads")
 PROCESSED_DIR = os.path.join(RAILWAY_VOLUME, "processed")
 
